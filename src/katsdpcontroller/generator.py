@@ -121,6 +121,7 @@ IMAGES = frozenset(
         "katsdpdatawriter",
         "katsdpmetawriter",
         "katsdptelstate",
+        "katsdpvlbi",
     ]
 )
 #: Number of bytes used by spectral imager per visibility
@@ -488,7 +489,7 @@ def _make_fgpu(
     streams = sorted(streams, key=lambda stream: stream.narrowband is not None)
     ibv = not configuration.options.develop.disable_ibverbs
     n_engines = len(streams[0].src_streams) // 2
-    base_name = streams[0].name
+    base_name = streams[0].name 
     sync_time = streams[0].sources(0)[0].sync_time
     fgpu_group = LogicalGroup(f"fgpu.{base_name}")
     g.add_node(fgpu_group)
@@ -2819,6 +2820,14 @@ def build_logical_graph(
         meta_writer: Optional[scheduler.LogicalNode] = _make_meta_writer(g, configuration)
     else:
         meta_writer = None
+    
+    _make_vlbi(
+        g,
+        configuration,
+        vdif_stream,
+        telstate=telstate,
+        cbfvlbi_node=find_node(g, "cbfvlbi"),
+    )
 
     # Count large allocations in telstate, which affects memory usage of
     # telstate itself and any tasks that dump the contents of telstate.
@@ -3238,6 +3247,36 @@ async def _make_spectral_imager(
     )
     return data_url, nodes
 
+def _make_vlbi(
+      g: networkx.MultiDiGraph,
+      configuration: Configuration,
+      capture_block_id: str,
+      stream: product_config.TiedArrayChannelisedVoltageStreamBase,
+      cbfvlbi_node: scheduler.LogicalNode,
+  ) -> scheduler.LogicalNode:
+      """Create a post-processing task that receives tied-array-channelised-voltages encapsulated in VDIF frames
+      and use a running instance of jive5ab to store these to disk. This task will likely have to run on a 
+      specific host with sufficient disk capacity."""
+      data_url = _stream_url(capture_block_id, stream.name)
+      task = ProductLogicalTask(f"vlbi.{stream.name}", streams=[stream])
+      task.subsystem = "sdp"
+      task.cpus = 4 * 1.0
+      task.mem = 64 * 1024
+      task.disk = _mb(1024 * stream.size + 1024) 
+      task.volumes = [DATA_VOL]
+      task.image = "katsdpvlbi"
+      task.katsdpservices_config = False
+      task.metadata_katcp_sensors = False
+      task.command = [
+          "vlbi_pipeline.py",
+          data_url,
+          escape_format(DATA_VOL.container_path),
+          escape_format(capture_block_id),
+          escape_format(stream.name),
+      ]
+      g.add_node(task)
+      g.add_edge(task, cbfvlbi_node, depends_finished=True, depends_finished_critical=False)
+      return task
 
 def _make_spectral_imager_report(
     g: networkx.MultiDiGraph,
@@ -3283,6 +3322,7 @@ async def build_postprocess_logical_graph(
     # not currently simulated to the necessary level.
     if configuration.options.interface_mode:
         return g
+    
 
     target_mapper = TargetMapper()
 

@@ -357,11 +357,12 @@ def _make_dsim(
     normally have two elements.
     """
     ibv = not configuration.options.develop.disable_ibverbs
-    # dsim assigns digitiser IDs positionally. According to M1000-0001-053,
-    # the least significant bit is the polarization ID with 0 = vertical, so
-    # sort by reverse of name so that if the streams are, for example,
-    # m012h and m012v then m012v comes first.
-    streams = sorted(streams, key=lambda stream: stream.name, reverse=True)
+    # dsim assigns digitiser IDs positionally. M1000-0001-053 claims that
+    # the least significant bit is the polarization ID with 0 = vertical, but
+    # MeerKAT actually uses 0 = horizontal (see NGC-1016).
+    # Sort by name so that if the streams are, for example, m012h and m012v
+    # then m012h comes first.
+    streams = sorted(streams, key=lambda stream: stream.name)
 
     if not all(stream.sync_time == streams[0].sync_time for stream in streams):
         raise RuntimeError("inconsistent sync times for {streams[0].antenna_name}")
@@ -917,6 +918,15 @@ def _make_fgpu(
                     fgpu.sensor_renames[
                         f"{stream.name}.input{j}.{name}"
                     ] = f"{stream.name}.{label}.{name}"
+        for stream in streams:
+            for name in [
+                "dither-seed",
+            ]:
+                # These engine-level sensors get replicated as well, but are not per-input
+                fgpu.sensor_renames[f"{stream.name}.{name}"] = [
+                    f"{stream.name}.{label}.{name}" for label in input_labels
+                ]
+
         # Prepare expected data rates etc
         fgpu.static_gauges["fgpu_expected_input_heaps_per_second"] = sum(
             src.adc_sample_rate / src.samples_per_heap for src in srcs
@@ -1465,6 +1475,7 @@ def _make_xbgpu(
                     "weight",
                     "beng-clip-cnt",
                     "tx.next-timestamp",
+                    "dither-seed",
                 ]
             for name in renames:
                 xbgpu.sensor_renames[f"{stream.name}.{name}"] = f"{stream.name}.{i}.{name}"
